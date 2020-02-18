@@ -1,0 +1,107 @@
+---
+output: github_document
+---
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.path = "man/figures/README-",
+  out.width = "100%"
+)
+library(iqtigfunctions)
+```
+# iqtigfunctions
+
+<!-- badges: start -->
+<!-- badges: end -->
+
+The goal of `iqtigfunctions` is to provide an implementation of IQTIG specific R functions as used in the published indicator specifications (QIDB). For a detailed, technical reference please use the `help` function, or take a look at the IQTIG R readme (in German), distributed with the QIDB.
+
+## Operators
+
+### Comparison
+
+A number of binary comparison operators have been defined to compare two numbers with a special handling of NAs.
+
+* `%!=%`
+* `%<%`
+* `%<=%`
+* `%==%`
+* `%>%`
+* `%>=%`
+
+```{r}
+5 %<=% 10
+2 %==% NA_real_
+```
+
+### Between
+
+In addition `%between%` checks element-wise if a vector is within an interval.
+
+```{r}
+1:5 %between% c(2, 4)
+```
+
+### Matching
+
+Some computional rules check values against a list of codes (e.g. ICD or OPS codes). The following four operators have been defined to make it easier to match values against a list of values. Theses values can also contain so-called wildcards (`%`).
+
+* `%all_in%`
+* `%all_like%`
+* `%any_in%`
+* `%any_like%`
+
+```{r}
+data <- data.frame(
+  OPSCHLUESSEL_1 = c("5-123.5", "5-134", "5-156"),
+  OPSCHLUESSEL_2 = c("5-001", "5-100", NA_character_),
+  OPSCHLUESSEL_3 = NA_character_,
+  TDS_B = c(1, 2, 3),
+  stringsAsFactors = FALSE
+)
+
+# the following function gathers all fields spread over multiple columns
+# and converts it to a list column
+data <- gather_composite_fields(data)
+data$OPSCHLUESSEL
+```
+
+```{r}
+with(data, OPSCHLUESSEL %any_in% c("5-12", "5-123.2", "5-156"))
+```
+
+```{r}
+with(data, OPSCHLUESSEL %all_like% c("5-123%", "5-1%", "5-168.12:R"))
+```
+
+### Grouping
+
+Often it is necessary to compute a value on subsets of records defined by a certain property. For example, the latest date of operation among all operations of a patient.
+
+* `%group_by%`
+
+```{r}
+with(mtcars, maximum(hp) %group_by% cyl)
+```
+
+```{r}
+with(mtcars, maximum(hp) %group_by% c(cyl, drat))
+```
+
+## General functions
+
+There is also a small number of general functions used in computational rules.
+
+* `maximum`
+* `minimum`
+* `replace_na`
+* `row_sums`
+* `to_year`
+
+## License
+
+MIT

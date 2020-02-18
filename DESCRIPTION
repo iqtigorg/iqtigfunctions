@@ -1,0 +1,27 @@
+Package: iqtigfunctions
+Title: IQTIG Specific Functions for Public Reporting
+Version: 1.0.0
+Authors@R: c(person("Institut für Qualitätssicherung und Transparenz im Gesundheitswesen (IQTIG)",
+                    role = c("aut", "cph")),
+             person("IQTIG Verfahrenssupport",
+                    email = "verfahrenssupport@iqtig.org", role = "cre"))
+Description: An implementation of IQTIG specific R functions for public reporting.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.0.2
+Depends: 
+    R (>= 3.3)
+Imports: 
+    data.table,
+    stats
+Suggests: 
+    DBI,
+    dplyr,
+    knitr,
+    odbc,
+    rmarkdown,
+    stringr,
+    testthat (>= 2.1.0),
+    withr
+VignetteBuilder: knitr

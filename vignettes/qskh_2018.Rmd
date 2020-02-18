@@ -1,0 +1,239 @@
+---
+title: "Computation of selected indicators of the QSKH QIDB 2018"
+author: "© IQTIG 2020"
+date: "2020-01-20"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Computation of selected indicators of the QSKH QIDB 2018}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  eval = TRUE,
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+This vignette demonstrates how to use the `iqtigfunctions` package and a current
+QSKH QIDB in the Microsoft Access format to evaluate selected indicators on a dataset.
+
+It is not the goal to cover all edge cases or to be particularly efficient, but to 
+provide a starting point for your own analyses.
+
+The following packages are being used:
+
+* `iqtigfunctions`
+* `DBI`
+* `odbc`
+* `dplyr`
+* `stringr`
+* `withr`
+
+In addition you need a Microsoft Access ODBC driver on your computer.
+
+```{r}
+library(dplyr, warn.conflicts = FALSE)
+```
+
+## Read the QIDB
+
+At first we need to download an IQTIG Access QIDB (e.g. for 2018)
+
+```{r}
+file_path_zip <- tempfile()
+qidb_url <- "https://iqtig.org/dateien/qs-instrumente/qidb/QIDB_2018_INDIREKT_V05_2019-05-17.zip"
+download.file(qidb_url, destfile = file_path_zip)
+expected_path <- file.path(
+  "Indirekte Verfahren",
+  "QIDB_Access_Datenbank",
+  "QSKH_2018_QIDB-INDIR_V05_2019-05-17.ACCDB"
+)
+temp_dir <- tempdir()
+unzip(file_path_zip, files = expected_path, exdir = temp_dir)
+qidb_path <- file.path(temp_dir, expected_path)
+```
+
+After that we can use the `DBI` and `odbc` packages to read in the data.
+
+```{r}
+connection_string <- paste0(
+  "Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=", qidb_path)
+con <- DBI::dbConnect(
+  odbc::odbc(), .connection_string = connection_string, encoding = "latin1")
+
+module <- "17/1"
+
+# Metadata für HEP
+Listenwert <- DBI::dbReadTable(con, "Listenwert")
+Listenwert <- group_by(Listenwert, LSTW_LST_Name) %>%
+  summarise(LSTW_Werte = list(LSTW_Wert))
+
+Vorberechnung <- DBI::dbReadTable(con, "Vorberechnung") %>%
+  filter(VB_AM_Bezeichnung == module)
+
+Funktion <- DBI::dbReadTable(con, "Funktion") %>%
+  filter(FN_AM_Bezeichnung == module)
+
+Indikator_Kennzahl <- DBI::dbReadTable(con, "Indikator_Kennzahl") %>%
+  filter(QIK_AM_Bezeichnung == module)
+
+DBI::dbDisconnect(con)
+```
+
+## Read a QS dataset
+
+We prepared a dummy dataset that matches the structure needed to apply
+indicators. The dataset should be a join of all sub-datasets of the
+respective module, these sub-datasets are identified by artificial columns
+of the pattern `TDS_X` (e. g. `TDS_B`, `TDS_O`, `TDS_PROZ`).
+
+```{r}
+path <- system.file("extdata", "dummy_17_1_B.rds", package = "iqtigfunctions")
+data <- readRDS(path)
+```
+
+Certain fields can have multiple values that are often encoded in a sequence of
+columns, typically named `FIELD_1`, `FIELD_2`, `FIELD_3`, etc.
+The function `gather_composite_fields()` identifies these columns and collapses
+them into a single list column `FIELD`. This is in particular necessary for
+`%any_like%`, `%all_like%` etc., which expect list columns as input.
+
+```{r}
+data <- iqtigfunctions::gather_composite_fields(data)
+```
+
+At last, we need to ensure that all time related columns have proper R types.
+
+```{r}
+for (col in colnames(data)) {
+  if (grepl("DATUM$", col)) {
+    data[[col]] <- as.Date(data[[col]])
+  }
+  if (grepl("ZEIT", col)) {
+    data[[col]] <- as.POSIXct(paste0("1970-01-01 ", data[[col]]), tz = "Europe/Berlin")
+  }
+}
+```
+
+
+## Prepare precomputed fields and lists
+
+Lists are accessed using a global variable `LST`:
+
+```{r}
+LST <- list()
+for (i in seq_len(nrow(Listenwert))) {
+  value <- Listenwert[i, ]
+  LST[[value$LSTW_LST_Name]] <- unlist(value$LSTW_Werte)
+}
+```
+
+Precomputations are accessed using the global variable `VB`:
+
+```{r}
+# The following loop only works with precomputations on the "Gesamt" dimension
+VB <- list()
+for (i in seq_len(nrow(Vorberechnung))) {
+  value <- Vorberechnung[i, ]
+  if (value$VB_Dimension == "Gesamt") {
+    VB[[value$VB_Name]] <- as.numeric(gsub(",", ".", value$VB_Wert))
+  }
+}
+```
+
+## Helper function to evaluate the R-code using `iqtigfunctions`
+
+```{r}
+evaluate_code <- function(data, code_text) {
+  code_text <- stringr::str_replace_all(
+    code_text, pattern = "\r", replacement = ""
+  )
+  code <- parse(text = code_text)
+  withr::with_package("iqtigfunctions", with(data, eval(code)))
+}
+```
+
+## Precomputations and computed fields
+
+Before we can compute the indicators we need to evaluate all computed fields
+(Funktionen) and add them as columns to our central dataset.
+
+Precomputations are not considered here, because all precomputations in the
+example are on the "Gesamt" dimension. In other cases, this requires more work.
+
+There are dependencies among the computed fields, as a lot of computed fields
+reference other computed fields. The following code evalues all computed fields
+in a loop until no error occurs or the iteration limit has been reached. The
+proper way to do it would be to construct a dependency graph and sort the
+fields topologically, but for this toy example this naive method works fine.
+
+```{r}
+row_ids <- seq_len(nrow(Funktion))
+iteration_count <- 1L
+errors <- TRUE
+while(errors && iteration_count <= sum(row_ids)) {
+  errors <- FALSE
+  for (row_id in row_ids) {
+    funktion <- Funktion[row_id, ]
+    if (funktion$FN_Feldname %in% colnames(data)) {
+      next
+    }
+    tryCatch({
+      result <- evaluate_code(data, funktion$FN_Script)
+      data[[funktion$FN_Feldname]] <- result
+      message("Added computed field ", funktion$FN_Feldname)
+    }, error = function(e) {
+      errors <<- TRUE
+    })
+  }
+  iteration_count <- iteration_count + 1L
+}
+```
+
+Now we have all information needed to evaluate our quality indicators. In order
+to keep the computation concise we only cover rate indicators.
+
+```{r}
+Indikator_Kennzahl %>%
+  filter(
+    QIK_Bewertungsart == "Ratenbasiert",
+    !grepl("(.berdoku|Unterdoku|MDS)", QIK_Bezeichnung)
+  ) %>%
+  rowwise() %>%
+  do({
+    indikator <- .
+    tds <- strsplit(
+      indikator$QIK_Teildatensatzbezug, split = ":", fixed = TRUE
+    )[[1L]][[2L]]
+    tryCatch({
+      O_result <- evaluate_code(data, indikator$QIK_Formel_Zaehler)
+      N_result <- evaluate_code(data, indikator$QIK_Formel_Nenner)
+      data.frame(
+        IKNRKH = data$IKNRKH, STANDORT = data$STANDORT,
+        O = O_result & N_result,
+        N = N_result,
+        TDS = data[[paste0("TDS_", tds)]]
+      ) %>%
+        group_by(TDS) %>%
+        # In case results are needed per unit:
+        # group_by(IKNRKH, STANDORT, TDS) %>%
+        summarise(O = max(O), N = max(N)) %>%
+        summarise(
+          QIK_ID = indikator$QIK_ID,
+          O = sum(O),
+          N = sum(N),
+          Result = O / N
+        )
+    }, error = function(e) {
+      tibble(
+        QIK_ID = indikator$QIK_ID,
+        O = NA_real_,
+        N = NA_real_,
+        Result = O / N
+      )
+    })
+  })
+```
